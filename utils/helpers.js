@@ -1,4 +1,5 @@
 exports.respond = (res, status, message = null, data = null) => {
+  console.log(message)
   const capitalizeFirstLetter = (text) => {
     return text
       ? text?.charAt(0).toUpperCase() + text?.slice(1).toLowerCase()

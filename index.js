@@ -77,10 +77,19 @@ async function run() {
     // POST: Create a new user
     app.post("/users", async (req, res) => {
       try {
-        const userData = {...req.body, createAt: Date.now()};
-        const result = await usersCollection.insertOne(userData);
-        if (result.insertedId) {
-          return respond(res, 200, "User created successfully");
+        const userData = { ...req.body, role: "donor", createAt: Date.now() };
+
+        // Check user
+        const existingUser = await usersCollection.findOne({
+          email: userData.email,
+        });
+        if (existingUser) {
+          return respond(res, 409, "User already exists in the database");
+        } else {
+          const result = await usersCollection.insertOne(userData);
+          if (result.insertedId) {
+            return respond(res, 200, "User created successfully");
+          }
         }
       } catch (error) {
         console.error("Error creating user:", error);
