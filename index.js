@@ -63,6 +63,7 @@ const bloodDonorsCollection = db.collection("blood-donors");
 const bloodRequestsCollection = db.collection("blood-requests");
 const donationsCollection = db.collection("donations");
 const blogCollection = db.collection("blogs");
+const messageCollection = db.collection("messages");
 
 async function run() {
   try {
@@ -74,11 +75,18 @@ async function run() {
       "Pinged your deployment. You successfully connected to MongoDB!"
     );
 
+    await usersCollection.createIndex({
+      bloodGroup: 1,
+      division: 1,
+      district: 1,
+      upazila: 1,
+      status: 1,
+    });
+
     // POST: Create a new user
     app.post("/users", async (req, res) => {
       try {
-        const userData = { ...req.body, role: "donor", createAt: Date.now() };
-
+        const userData = req.body;
         // Check user
         const existingUser = await usersCollection.findOne({
           email: userData.email,
@@ -88,11 +96,102 @@ async function run() {
         } else {
           const result = await usersCollection.insertOne(userData);
           if (result.insertedId) {
-            return respond(res, 200, "User created successfully");
+            return respond(res, 201, "User created successfully");
           }
         }
       } catch (error) {
         console.error("Error creating user:", error);
+        return respond(res, 500, "Internal server error");
+      }
+    });
+
+    // GET: Retrieve users data
+    // GET: Retrieve users data with search and pagination
+    app.get("/users", async (req, res) => {
+      try {
+        const {
+          bloodGroup,
+          division,
+          district,
+          upazila,
+          status = "active",
+          page = 1,
+          limit = 10,
+        } = req.query;
+        const query = { status };
+        if (bloodGroup) query.bloodGroup = bloodGroup;
+        if (division) query.division = division;
+        if (district) query.district = district;
+        if (upazila) query.upazila = upazila;
+        const skip = (page - 1) * limit;
+        const total = await usersCollection.countDocuments(query);
+        const donors = await usersCollection
+          .find(query)
+          .skip(skip)
+          .limit(parseInt(limit))
+          .toArray();
+
+        if (donors.length > 0) {
+          return respond(res, 200, "Donors found successfully", {
+            data: donors,
+            total,
+            page: parseInt(page),
+            totalPages: Math.ceil(total / limit),
+          });
+        } else {
+          return respond(res, 200, "No donors found matching your criteria", {
+            data: [],
+            total: 0,
+            page: parseInt(page),
+            totalPages: 0,
+          });
+        }
+      } catch (error) {
+        console.error("Error fetching donors:", error);
+        return respond(res, 500, "Internal server error");
+      }
+    });
+
+    // POST: Save a message
+    app.post("/messages", async (req, res) => {
+      try {
+        const newMessage = req.body;
+        // Check message
+        const existingMessage = await messageCollection.findOne({
+          email: newMessage.email,
+        });
+        if (existingMessage) {
+          return respond(res, 409, "Message already exists in the database");
+        } else {
+          const result = await messageCollection.insertOne(newMessage);
+          if (result.insertedId) {
+            return respond(res, 201, "Message saved successfully");
+          }
+        }
+      } catch (error) {
+        console.error("Error saved message:", error);
+        return respond(res, 500, "Internal server error");
+      }
+    });
+
+    // POST: Create a request for blood
+    app.post("/blood-request", async (req, res) => {
+      try {
+        const newBloodRequest = req.body;
+        // Check message
+        const existingMessage = await messageCollection.findOne({
+          email: newBloodRequest.email,
+        });
+        if (existingMessage) {
+          return respond(res, 409, "Blood data already exists in the database");
+        } else {
+          const result = await bloodRequestsCollection.insertOne(newBloodRequest);
+          if (result.insertedId) {
+            return respond(res, 201, "Blood data saved successfully");
+          }
+        }
+      } catch (error) {
+        console.error("Error saved message:", error);
         return respond(res, 500, "Internal server error");
       }
     });
