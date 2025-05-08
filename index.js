@@ -229,38 +229,41 @@ async function run() {
       }
     });
 
-    // POST: Create a request for blood
+    // POST: Blood request for patient
     app.post("/blood-requests", async (req, res) => {
       try {
         const newBloodRequest = req.body;
-        // Check blood request
+
+        // Check for existing request from this user for the same donor
         const existingBloodRequest = await bloodRequestsCollection.findOne({
-          requesterEmail: newBloodRequest.requesterEmail,
+          "requester.email": newBloodRequest.requester.email,
+          "metadata.donorId": newBloodRequest.metadata.donorId,
+          "status.current": { $in: ["pending", "inprogress"] }, // Check only active requests
         });
+
         if (existingBloodRequest) {
           return respond(
             res,
             409,
-            "Blood request already exists in the database",
+            "You already have an active request with this donor",
             [],
             {}
           );
-        } else {
-          const result = await bloodRequestsCollection.insertOne(
-            newBloodRequest
+        }
+
+        const result = await bloodRequestsCollection.insertOne(newBloodRequest);
+
+        if (result.insertedId) {
+          return respond(
+            res,
+            201,
+            "Blood request saved successfully",
+            { insertedId: result.insertedId },
+            {}
           );
-          if (result.insertedId) {
-            return respond(
-              res,
-              201,
-              "Blood request saved successfully",
-              [],
-              {}
-            );
-          }
         }
       } catch (error) {
-        console.error("Error saved message:", error);
+        console.error("Error saving blood request:", error);
         return respond(res, 500, "Server error", [], {});
       }
     });
@@ -276,7 +279,6 @@ async function run() {
           .skip(skip)
           .limit(parseInt(limit))
           .toArray();
-
         if (bloodRequests?.length) {
           return respond(
             res,
