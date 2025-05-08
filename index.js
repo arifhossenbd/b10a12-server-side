@@ -234,30 +234,62 @@ async function run() {
       try {
         const newBloodRequest = req.body;
 
-        // Check for existing request from this user for the same donor
-        const existingBloodRequest = await bloodRequestsCollection.findOne({
-          "requester.email": newBloodRequest.requester.email,
-          "metadata.donorId": newBloodRequest.metadata.donorId,
-          "status.current": { $in: ["pending", "inprogress"] }, // Check only active requests
-        });
-
-        if (existingBloodRequest) {
+        // 1. Prevent self-donation (requester = donor)
+        if (
+          newBloodRequest.requester.email ===
+          newBloodRequest.metadata.donorEmail
+        ) {
           return respond(
             res,
-            409,
-            "You already have an active request with this donor",
+            403,
+            "You cannot create a blood request for yourself",
             [],
             {}
           );
         }
 
+        // 2. Check if donor is already engaged with this requester
+        const existingRequesterDonorPair =
+          await bloodRequestsCollection.findOne({
+            "requester.email": newBloodRequest.requester.email,
+            "metadata.donorEmail": newBloodRequest.metadata.donorEmail,
+            "status.current": { $in: ["pending", "inprogress"] },
+          });
+
+        if (existingRequesterDonorPair) {
+          return respond(
+            res,
+            409,
+            "This donor is already assisting with your active request",
+            [],
+            {}
+          );
+        }
+
+        // 3. Check if donor is busy with other requests
+        const donorEngagedElsewhere = await bloodRequestsCollection.findOne({
+          "metadata.donorEmail": newBloodRequest.metadata.donorEmail,
+          "status.current": "inprogress",
+        });
+
+        if (donorEngagedElsewhere) {
+          return respond(
+            res,
+            409,
+            "This donor is currently helping another patient",
+            [],
+            {}
+          );
+        }
+
+        // All checks passed - create request
         const result = await bloodRequestsCollection.insertOne(newBloodRequest);
 
         if (result.insertedId) {
           return respond(
             res,
             201,
-            "Blood request saved successfully",
+            "Blood request created successfully",
             { insertedId: result.insertedId },
             {}
           );
