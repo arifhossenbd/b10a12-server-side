@@ -97,7 +97,7 @@ const client = new MongoClient(uri, {
 const db = client.db("blood-donation");
 
 // Collections
-const donorCollection = db.collection("donors");
+const userCollection = db.collection("users");
 const bloodRequestsCollection = db.collection("blood-requests");
 const bloodDonationCollection = db.collection("blood-donations");
 const blogCollection = db.collection("blogs");
@@ -113,7 +113,7 @@ async function run() {
       "Pinged your deployment. You successfully connected to MongoDB!"
     );
 
-    await donorCollection.createIndex({
+    await userCollection.createIndex({
       bloodGroup: 1,
       division: 1,
       district: 1,
@@ -121,6 +121,7 @@ async function run() {
       status: 1,
     });
 
+    await userCollection.createIndex({ email: 1 });
     await bloodRequestsCollection.createIndex({ donationStatus: 1 });
     await bloodRequestsCollection.createIndex({ donorId: 1 });
     await bloodDonationCollection.createIndex({ requestId: 1 });
@@ -128,25 +129,25 @@ async function run() {
     await bloodDonationCollection.createIndex({ status: 1 });
 
     // POST: Create a new user
-    app.post("/donors", async (req, res) => {
+    app.post("/users", async (req, res) => {
       try {
-        const donorData = req.body;
-        // Check donor exists
-        const existingDonor = await donorCollection.findOne({
-          email: donorData.email,
+        const userData = req.body;
+        // Check user exists
+        const existingUser = await userCollection.findOne({
+          email: userData.email,
         });
-        if (existingDonor) {
+        if (existingUser) {
           return respond(
             res,
             409,
-            "Donor already exists in the database",
+            "User already exists in the database",
             [],
             {}
           );
         } else {
-          const result = await donorCollection.insertOne(donorData);
+          const result = await userCollection.insertOne(userData);
           if (result.insertedId) {
-            return respond(res, 201, "Donor created successfully", [], {});
+            return respond(res, 201, "User created successfully", [], {});
           }
         }
       } catch (error) {
@@ -155,8 +156,37 @@ async function run() {
       }
     });
 
-    // GET: Donors result
-    app.get("/donors", async (req, res) => {
+    // GET: Retrieve single user with flexible filtering
+    app.get("/users/find", async (req, res) => {
+      try {
+        const { email } = req.query;
+
+        // Email must be provided
+        if (!email) {
+          return respond(res, 400, "Email parameter is required", [], {});
+        }
+
+        // Find the user
+        const user = await userCollection.findOne({ email: email });
+        if (user) {
+          return respond(res, 200, "User retrieved successfully", user, {});
+        } else {
+          return respond(
+            res,
+            404,
+            "User not found with the specified criteria",
+            [],
+            {}
+          );
+        }
+      } catch (error) {
+        console.error("Error fetching user:", error);
+        return respond(res, 500, "Server error", [], {});
+      }
+    });
+
+    // GET: Users result
+    app.get("/users", async (req, res) => {
       try {
         const {
           bloodGroup,
@@ -180,23 +210,23 @@ async function run() {
         const parsedLimit = Math.min(Math.max(Number(limit) || 10, 1), 100);
         const skip = (parsedPage - 1) * parsedLimit;
 
-        const [total, donors] = await Promise.all([
-          donorCollection.countDocuments(query),
-          donorCollection.find(query).skip(skip).limit(parsedLimit).toArray(),
+        const [total, users] = await Promise.all([
+          userCollection.countDocuments(query),
+          userCollection.find(query).skip(skip).limit(parsedLimit).toArray(),
         ]);
 
-        if (donors?.length) {
-          return respond(res, 200, "Donors retrieved successfully", donors, {
+        if (users?.length) {
+          return respond(res, 200, "Users retrieved successfully", users, {
             total,
             page: parsedPage,
             limit: parsedLimit,
             totalPages: Math.ceil(total / parsedLimit),
           });
         } else {
-          return respond(res, 404, "Donors not found", [], {});
+          return respond(res, 404, "Users not found", [], {});
         }
       } catch (error) {
-        console.error("Error fetching donors:", error);
+        console.error("Error fetching users:", error);
         return respond(res, 500, "Server error", [], {});
       }
     });
