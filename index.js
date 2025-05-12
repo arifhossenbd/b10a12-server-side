@@ -231,6 +231,41 @@ async function run() {
       }
     });
 
+    // PATCH: Update user data
+    app.patch("/users/:id", validateId, async (req, res) => {
+      const id = req.validatedId;
+      const updateData = req.body;
+
+      try {
+        const { _id, email, createdAt, ...safeUpdateData } = updateData;
+        safeUpdateData.updatedAt = new Date().toISOString();
+        const result = await userCollection.updateOne(
+          { _id: id },
+          { $set: safeUpdateData }
+        );
+
+        if (result.matchedCount === 0) {
+          return respond(res, 404, "User not found", [], {});
+        }
+
+        if (result.modifiedCount === 1) {
+          const updatedUser = await userCollection.findOne({ _id: id });
+          return respond(
+            res,
+            200,
+            "User updated successfully",
+            updatedUser,
+            {}
+          );
+        } else {
+          return respond(res, 200, "No changes were made to the user", [], {});
+        }
+      } catch (error) {
+        console.error("Error updating user:", error);
+        return respond(res, 500, "Server error", [], {});
+      }
+    });
+
     // POST: Save a message
     app.post("/messages", async (req, res) => {
       try {
@@ -369,7 +404,7 @@ async function run() {
     // GET: Retrieve single request by ID
     app.get("/blood-requests/:id", validateId, async (req, res) => {
       try {
-        const id = req.params.id;
+        const id = req.validateId;
         const query = { _id: new ObjectId(id) };
         const bloodRequest = await bloodRequestsCollection.findOne(query);
 
@@ -393,7 +428,7 @@ async function run() {
     // PATCH: Blood donated by donor
     app.patch("/blood-requests/:id", validateId, async (req, res) => {
       try {
-        const { id } = req.params;
+        const { id } = req.validateId;
         const updateBloodDonation = req.body;
 
         // Validate required fields
