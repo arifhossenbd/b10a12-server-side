@@ -57,22 +57,7 @@ app.use(
 
 app.use(express.json());
 app.use(cookieParser());
-
-app.use(
-  helmet.contentSecurityPolicy({
-    directives: {
-      defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "https://fonts.googleapis.com"],
-      fontSrc: ["'self'", "https://fonts.gstatic.com"],
-      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
-      connectSrc: ["'self'", "*"],
-      imgSrc: ["'self'", "data:", "blob:"],
-      objectSrc: ["'none'"],
-      frameSrc: ["'self'"],
-      upgradeInsecureRequests: [],
-    },
-  })
-);
+app.use(helmet());
 
 const uri = process.env.MONGODB_URI;
 
@@ -357,22 +342,29 @@ async function run() {
       }
     });
 
-    // PATCH: Update blood request status
+    // PATCH: Update blood request status by donor
     app.patch("/blood-requests/:id", validateId, async (req, res) => {
       try {
         const id = req.validatedId;
         const updateData = req.body;
 
+        // Required field validation
         if (!updateData.donationStatus || !updateData.status?.current) {
           return respond(res, 400, "Missing required status fields");
         }
 
         const currentTime = new Date().toISOString();
+
+        // Construct the update object
         const updateObj = {
           $set: {
             donationStatus: updateData.donationStatus,
             updatedAt: currentTime,
             "status.current": updateData.status.current,
+            // Update metadata if provided
+            ...(updateData.metadata && {
+              metadata: updateData.metadata,
+            }),
           },
           $push: {
             "status.history": {
@@ -381,31 +373,26 @@ async function run() {
                   status: updateData.status.current,
                   changedAt: currentTime,
                   changedBy: {
-                    id: updateData.donorId || "system",
-                    name: updateData.donorName || "system",
-                    email: updateData.donorEmail || "system",
+                    id: updateData.metadata.donorId || "system",
+                    name: updateData.metadata.donorName || "system",
+                    email: updateData.metadata.donorEmail || "system",
                     role: "donor",
                   },
                 },
               ],
-              $slice: -5,
+              $slice: -10, // Keep last 10 status changes
             },
           },
         };
-
-        if (updateData.donorId) {
-          updateObj.$set.metadata = {
-            donorId: updateData.donorId,
-            donorName: updateData.donorName,
-            donorEmail: updateData.donorEmail,
-            updatedAt: currentTime,
-          };
-        }
 
         const result = await bloodRequestsCollection.updateOne(
           { _id: id },
           updateObj
         );
+
+        if (result.matchedCount === 0) {
+          return respond(res, 404, "Blood request not found");
+        }
 
         if (result.modifiedCount === 1) {
           const updatedRequest = await bloodRequestsCollection.findOne({
@@ -418,7 +405,8 @@ async function run() {
             updatedRequest
           );
         }
-        return respond(res, 404, "No request found or no changes made");
+
+        return respond(res, 200, "No changes were made to the request");
       } catch (error) {
         console.error("PATCH error:", error);
         return respond(res, 500, "Server error");
@@ -460,7 +448,7 @@ async function run() {
     // GET: Paginated donation requests with filtering
     app.get("/donations/my-requests", async (req, res) => {
       try {
-        const { email, page = 1, limit = 10, status, bloodGroup } = req.query;
+        const { email, page = 1, limit = 10 } = req.query;
 
         if (!email) {
           return respond(res, 400, "Requester email is required");
@@ -468,27 +456,13 @@ async function run() {
 
         const query = { "requester.email": email };
 
-        if (status && status !== "all") {
-          query["status.current"] = status;
-        }
-
-        if (bloodGroup) {
-          query["donationInfo.bloodGroup"] = bloodGroup;
-        }
-
         const { items: requests, meta } = await paginate(
           bloodRequestsCollection,
           query,
           { page, limit, sort: { createdAt: -1 } }
         );
 
-        return respond(res, 200, "Donation requests retrieved", requests, {
-          ...meta,
-          filters: {
-            status: status || "all",
-            bloodGroup: bloodGroup || "all",
-          },
-        });
+        return respond(res, 200, "Donation requests retrieved", requests, meta);
       } catch (error) {
         console.error("Error fetching donation requests:", error);
         return respond(res, 500, "Server error");
@@ -590,6 +564,55 @@ async function run() {
         );
       } catch (error) {
         console.error("Error updating blood request:", error);
+        return respond(res, 500, "Server error");
+      }
+    });
+
+    // DELETE: Delete a blood request (only if status is pending)
+    app.delete("/donations/my-requests/:id", validateId, async (req, res) => {
+      try {
+        const id = req.validatedId;
+        const { email } = req.query; // Requester's email for verification
+
+        if (!email) {
+          return respond(
+            res,
+            400,
+            "Requester email is required for verification"
+          );
+        }
+
+        // Find the request and verify ownership
+        const request = await bloodRequestsCollection.findOne({ _id: id });
+        if (!request) {
+          return respond(res, 404, "Blood request not found");
+        }
+
+        // Verify requester owns this request
+        if (request.requester.email !== email) {
+          return respond(
+            res,
+            403,
+            "You are not authorized to delete this request"
+          );
+        }
+
+        // Only allow deletion if status is pending
+        if (request.status.current !== "pending") {
+          return respond(
+            res,
+            403,
+            "Cannot delete request that is already in progress or completed"
+          );
+        }
+
+        const result = await bloodRequestsCollection.deleteOne({ _id: id });
+        if (result.deletedCount === 1) {
+          return respond(res, 200, "Blood request deleted successfully");
+        }
+        return respond(res, 404, "Blood request not found");
+      } catch (error) {
+        console.error("Error deleting blood request:", error);
         return respond(res, 500, "Server error");
       }
     });
