@@ -1,17 +1,15 @@
 /**
- *  Blood Donation - Backend Server
- *  This server handle
- *   - Authentication (JWT)
- *   - Donation management
+ * Blood Donation - Backend Server
+ * This server handles:
+ * - Authentication (JWT)
+ * - Donation management
  *
- *  Database: MongoDB
- *  Middlewares: CORS, JWT Verification, Cookie Parsing
+ * Database: MongoDB
+ * Middlewares: CORS, JWT Verification, Cookie Parsing
  */
 
-// Load environment variable
 require("dotenv").config();
 
-// import required modules
 const cors = require("cors");
 const helmet = require("helmet");
 const jwt = require("jsonwebtoken");
@@ -19,12 +17,11 @@ const cookieParser = require("cookie-parser");
 const express = require("express");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
-// Initial Express app
 const app = express();
 const port = process.env.PORT || 3000;
 
 // Import utility functions
-const { respond, getBloodGroupQuery } = require("./utils/helpers");
+const { respond, getBloodGroupQuery, paginate } = require("./utils/helpers");
 
 /**
  * =========================
@@ -33,10 +30,8 @@ const { respond, getBloodGroupQuery } = require("./utils/helpers");
  */
 
 const validateId = (req, res, next) => {
-  // Check both params and query for ID
   const id = req.params.id || req.query.id;
 
-  // Check if ID exists
   if (!id) {
     return respond(
       res,
@@ -45,16 +40,14 @@ const validateId = (req, res, next) => {
     );
   }
 
-  if (!ObjectId.isValid(id)) {
+  try {
+    req.validatedId = new ObjectId(id);
+    next();
+  } catch (error) {
     return respond(res, 400, "Invalid ID format");
   }
-
-  // Store the validated ID in req for consistency
-  req.validatedId = new ObjectId(id);
-  next();
 };
 
-// CORS configuration for allowed origins
 app.use(
   cors({
     origin: ["http://localhost:5173", "https://blood-connect-b4710.web.app"],
@@ -62,7 +55,6 @@ app.use(
   })
 );
 
-// Parse JSON bodies and cookies
 app.use(express.json());
 app.use(cookieParser());
 
@@ -84,7 +76,6 @@ app.use(
 
 const uri = process.env.MONGODB_URI;
 
-// Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -93,10 +84,7 @@ const client = new MongoClient(uri, {
   },
 });
 
-// Connect to the DB
 const db = client.db("blood-donation");
-
-// Collections
 const userCollection = db.collection("users");
 const bloodRequestsCollection = db.collection("blood-requests");
 const bloodDonationCollection = db.collection("blood-donations");
@@ -105,87 +93,77 @@ const messageCollection = db.collection("messages");
 
 async function run() {
   try {
-    // Connect the client to the server (optional starting in v4.7)
-    // await client.connect();
-    // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
-    );
+    console.log("Successfully connected to MongoDB!");
 
-    await userCollection.createIndex({
-      bloodGroup: 1,
-      division: 1,
-      district: 1,
-      upazila: 1,
-      status: 1,
-    });
+    // Create indexes
+    await userCollection.createIndexes([
+      {
+        key: {
+          bloodGroup: 1,
+          division: 1,
+          district: 1,
+          upazila: 1,
+          status: 1,
+        },
+      },
+      { key: { email: 1 } },
+    ]);
 
-    await userCollection.createIndex({ email: 1 });
-    await bloodRequestsCollection.createIndex({ donationStatus: 1 });
-    await bloodRequestsCollection.createIndex({ donorId: 1 });
-    await bloodDonationCollection.createIndex({ requestId: 1 });
-    await bloodDonationCollection.createIndex({ donorId: 1 });
-    await bloodDonationCollection.createIndex({ status: 1 });
+    await bloodRequestsCollection.createIndexes([
+      { key: { donationStatus: 1 } },
+      { key: { donorId: 1 } },
+    ]);
+
+    await bloodDonationCollection.createIndexes([
+      { key: { requestId: 1 } },
+      { key: { donorId: 1 } },
+      { key: { status: 1 } },
+    ]);
 
     // POST: Create a new user
     app.post("/users", async (req, res) => {
       try {
         const userData = req.body;
-        // Check user exists
         const existingUser = await userCollection.findOne({
           email: userData.email,
         });
+
         if (existingUser) {
-          return respond(
-            res,
-            409,
-            "User already exists in the database",
-            [],
-            {}
-          );
-        } else {
-          const result = await userCollection.insertOne(userData);
-          if (result.insertedId) {
-            return respond(res, 201, "User created successfully", [], {});
-          }
+          return respond(res, 409, "User already exists");
+        }
+
+        const result = await userCollection.insertOne(userData);
+        if (result.insertedId) {
+          return respond(res, 201, "User created successfully");
         }
       } catch (error) {
         console.error("Error creating user:", error);
-        return respond(res, 500, "Server error", [], {});
+        return respond(res, 500, "Server error");
       }
     });
 
-    // GET: Retrieve single user with flexible filtering
+    // GET: Retrieve single user by email
     app.get("/users/find", async (req, res) => {
       try {
         const { email } = req.query;
 
-        // Email must be provided
         if (!email) {
-          return respond(res, 400, "Email parameter is required", [], {});
+          return respond(res, 400, "Email parameter is required");
         }
 
-        // Find the user
-        const user = await userCollection.findOne({ email: email });
+        const user = await userCollection.findOne({ email });
         if (user) {
-          return respond(res, 200, "User retrieved successfully", user, {});
-        } else {
-          return respond(
-            res,
-            404,
-            "User not found with the specified criteria",
-            [],
-            {}
-          );
+          return respond(res, 200, "User retrieved successfully", user);
         }
+        return respond(res, 404, "User not found");
       } catch (error) {
         console.error("Error fetching user:", error);
-        return respond(res, 500, "Server error", [], {});
+        return respond(res, 500, "Server error");
       }
     });
 
-    // GET: Users result
+    // GET: Users with pagination and filtering
     app.get("/users", async (req, res) => {
       try {
         const {
@@ -197,6 +175,7 @@ async function run() {
           page = 1,
           limit = 10,
         } = req.query;
+
         const bloodGroupQuery = getBloodGroupQuery(bloodGroup);
         const query = {
           accountStatus,
@@ -206,28 +185,18 @@ async function run() {
           ...(upazila && { "location.upazila": new RegExp(upazila, "i") }),
         };
 
-        const parsedPage = Math.max(Number(page) || 1, 1);
-        const parsedLimit = Math.min(Math.max(Number(limit) || 10, 1), 100);
-        const skip = (parsedPage - 1) * parsedLimit;
+        const { items: users, meta } = await paginate(userCollection, query, {
+          page,
+          limit,
+        });
 
-        const [total, users] = await Promise.all([
-          userCollection.countDocuments(query),
-          userCollection.find(query).skip(skip).limit(parsedLimit).toArray(),
-        ]);
-
-        if (users?.length) {
-          return respond(res, 200, "Users retrieved successfully", users, {
-            total,
-            page: parsedPage,
-            limit: parsedLimit,
-            totalPages: Math.ceil(total / parsedLimit),
-          });
-        } else {
-          return respond(res, 404, "Users not found", [], {});
+        if (users.length) {
+          return respond(res, 200, "Users retrieved successfully", users, meta);
         }
+        return respond(res, 404, "Users not found", [], meta);
       } catch (error) {
         console.error("Error fetching users:", error);
-        return respond(res, 500, "Server error", [], {});
+        return respond(res, 500, "Server error");
       }
     });
 
@@ -239,30 +208,24 @@ async function run() {
       try {
         const { _id, email, createdAt, ...safeUpdateData } = updateData;
         safeUpdateData.updatedAt = new Date().toISOString();
+
         const result = await userCollection.updateOne(
           { _id: id },
           { $set: safeUpdateData }
         );
 
         if (result.matchedCount === 0) {
-          return respond(res, 404, "User not found", [], {});
+          return respond(res, 404, "User not found");
         }
 
         if (result.modifiedCount === 1) {
           const updatedUser = await userCollection.findOne({ _id: id });
-          return respond(
-            res,
-            200,
-            "User updated successfully",
-            updatedUser,
-            {}
-          );
-        } else {
-          return respond(res, 200, "No changes were made to the user", [], {});
+          return respond(res, 200, "User updated successfully", updatedUser);
         }
+        return respond(res, 200, "No changes were made to the user");
       } catch (error) {
         console.error("Error updating user:", error);
-        return respond(res, 500, "Server error", [], {});
+        return respond(res, 500, "Server error");
       }
     });
 
@@ -270,27 +233,21 @@ async function run() {
     app.post("/messages", async (req, res) => {
       try {
         const newMessage = req.body;
-        // Check message
         const existingMessage = await messageCollection.findOne({
           email: newMessage.email,
         });
+
         if (existingMessage) {
-          return respond(
-            res,
-            409,
-            "Message already exists in the database",
-            [],
-            {}
-          );
-        } else {
-          const result = await messageCollection.insertOne(newMessage);
-          if (result.insertedId) {
-            return respond(res, 201, "Message saved successfully", [], {});
-          }
+          return respond(res, 409, "Message already exists");
+        }
+
+        const result = await messageCollection.insertOne(newMessage);
+        if (result.insertedId) {
+          return respond(res, 201, "Message saved successfully");
         }
       } catch (error) {
-        console.error("Error saved message:", error);
-        return respond(res, 500, "Server error", [], {});
+        console.error("Error saving message:", error);
+        return respond(res, 500, "Server error");
       }
     });
 
@@ -299,7 +256,7 @@ async function run() {
       try {
         const newBloodRequest = req.body;
 
-        // 1. Prevent self-donation (requester = donor)
+        // Prevent self-donation
         if (
           newBloodRequest.requester.email ===
           newBloodRequest.metadata.donorEmail
@@ -307,164 +264,126 @@ async function run() {
           return respond(
             res,
             403,
-            "You cannot create a blood request for yourself",
-            [],
-            {}
+            "You cannot create a blood request for yourself"
           );
         }
 
-        // 2. Check if donor is already engaged with this requester
-        const existingRequesterDonorPair =
-          await bloodRequestsCollection.findOne({
-            "requester.email": newBloodRequest.requester.email,
-            "metadata.donorEmail": newBloodRequest.metadata.donorEmail,
-            "status.current": { $in: ["pending", "inprogress"] },
-          });
+        // Check if donor is already engaged with this requester
+        const existingPair = await bloodRequestsCollection.findOne({
+          "requester.email": newBloodRequest.requester.email,
+          "metadata.donorEmail": newBloodRequest.metadata.donorEmail,
+          "status.current": { $in: ["pending", "inprogress"] },
+        });
 
-        if (existingRequesterDonorPair) {
+        if (existingPair) {
           return respond(
             res,
             409,
-            "This donor is already assisting with your active request",
-            [],
-            {}
+            "This donor is already assisting with your active request"
           );
         }
 
-        // 3. Check if donor is busy with other requests
-        const donorEngagedElsewhere = await bloodRequestsCollection.findOne({
+        // Check if donor is busy with other requests
+        const donorBusy = await bloodRequestsCollection.findOne({
           "metadata.donorEmail": newBloodRequest.metadata.donorEmail,
           "status.current": "inprogress",
         });
 
-        if (donorEngagedElsewhere) {
+        if (donorBusy) {
           return respond(
             res,
             409,
-            "This donor is currently helping another patient",
-            [],
-            {}
+            "This donor is currently helping another patient"
           );
         }
 
-        // All checks passed - create request
         const result = await bloodRequestsCollection.insertOne(newBloodRequest);
-
         if (result.insertedId) {
-          return respond(
-            res,
-            201,
-            "Blood request created successfully",
-            { insertedId: result.insertedId },
-            {}
-          );
+          return respond(res, 201, "Blood request created successfully", {
+            insertedId: result.insertedId,
+          });
         }
       } catch (error) {
         console.error("Error saving blood request:", error);
-        return respond(res, 500, "Server error", [], {});
+        return respond(res, 500, "Server error");
       }
     });
 
-    // GET: Retrieve all requests
+    // GET: Retrieve all requests with pagination
     app.get("/blood-requests", async (req, res) => {
       try {
         const { page = 1, limit = 10 } = req.query;
-        const skip = (page - 1) * limit;
-        const total = await bloodRequestsCollection.countDocuments();
-        const bloodRequests = await bloodRequestsCollection
-          .find()
-          .skip(skip)
-          .limit(parseInt(limit))
-          .toArray();
-        if (bloodRequests?.length) {
+
+        const { items: bloodRequests, meta } = await paginate(
+          bloodRequestsCollection,
+          {},
+          { page, limit }
+        );
+
+        if (bloodRequests.length) {
           return respond(
             res,
             200,
             "Blood requests retrieved successfully",
             bloodRequests,
-            {
-              total,
-              page: parseInt(page),
-              totalPages: Math.ceil(total / limit),
-            }
+            meta
           );
-        } else {
-          return respond(res, 404, "No blood requests found", [], {
-            total: 0,
-            page: parseInt(page),
-            totalPages: 0,
-          });
         }
+        return respond(res, 404, "No blood requests found", [], meta);
       } catch (error) {
         console.error("Error fetching blood requests:", error);
-        return respond(res, 500, "Server error", [], {});
+        return respond(res, 500, "Server error");
       }
     });
 
     // GET: Retrieve single request by ID
     app.get("/blood-requests/:id", validateId, async (req, res) => {
       try {
-        const id = req.validateId;
-        const query = { _id: new ObjectId(id) };
-        const bloodRequest = await bloodRequestsCollection.findOne(query);
+        const id = req.validatedId;
+        const bloodRequest = await bloodRequestsCollection.findOne({ _id: id });
 
         if (bloodRequest) {
           return respond(
             res,
             200,
             "Blood request retrieved successfully",
-            bloodRequest,
-            {}
+            bloodRequest
           );
-        } else {
-          return respond(res, 404, "Blood request not found", [], {});
         }
+        return respond(res, 404, "Blood request not found");
       } catch (error) {
         console.error("Error fetching blood request:", error);
-        return respond(res, 500, "Server error", [], {});
+        return respond(res, 500, "Server error");
       }
     });
 
-    // PATCH: Blood donated by donor
+    // PATCH: Update blood request status
     app.patch("/blood-requests/:id", validateId, async (req, res) => {
       try {
-        const { id } = req.validateId;
-        const updateBloodDonation = req.body;
+        const id = req.validatedId;
+        const updateData = req.body;
 
-        // Validate required fields
-        if (
-          !updateBloodDonation.donationStatus ||
-          !updateBloodDonation.status?.current
-        ) {
-          return respond(res, 400, "Missing required status fields", [], {});
+        if (!updateData.donationStatus || !updateData.status?.current) {
+          return respond(res, 400, "Missing required status fields");
         }
 
-        // Get current timestamp
         const currentTime = new Date().toISOString();
-
-        // Prepare update object
         const updateObj = {
           $set: {
-            donationStatus: updateBloodDonation.donationStatus,
+            donationStatus: updateData.donationStatus,
             updatedAt: currentTime,
-            "status.current": updateBloodDonation.status.current,
+            "status.current": updateData.status.current,
           },
           $push: {
             "status.history": {
               $each: [
                 {
-                  status: updateBloodDonation.status.current,
+                  status: updateData.status.current,
                   changedAt: currentTime,
                   changedBy: {
-                    id: updateBloodDonation.donorId || req.user?.id || "system",
-                    name:
-                      updateBloodDonation.donorName ||
-                      req.user?.name ||
-                      "system",
-                    email:
-                      updateBloodDonation.donorEmail ||
-                      req.user?.email ||
-                      "system",
+                    id: updateData.donorId || "system",
+                    name: updateData.donorName || "system",
+                    email: updateData.donorEmail || "system",
                     role: "donor",
                   },
                 },
@@ -474,45 +393,204 @@ async function run() {
           },
         };
 
-        // Add donor info if it exists
-        if (updateBloodDonation.donorId) {
+        if (updateData.donorId) {
           updateObj.$set.metadata = {
-            donorId: updateBloodDonation.donorId,
-            donorName: updateBloodDonation.donorName,
-            donorEmail: updateBloodDonation.donorEmail,
+            donorId: updateData.donorId,
+            donorName: updateData.donorName,
+            donorEmail: updateData.donorEmail,
             updatedAt: currentTime,
           };
         }
 
-        // Update database
         const result = await bloodRequestsCollection.updateOne(
-          { _id: new ObjectId(id) },
+          { _id: id },
           updateObj
         );
 
         if (result.modifiedCount === 1) {
           const updatedRequest = await bloodRequestsCollection.findOne({
-            _id: new ObjectId(id),
+            _id: id,
           });
           return respond(
             res,
             200,
             "Request updated successfully",
-            updatedRequest,
-            {}
-          );
-        } else {
-          return respond(
-            res,
-            404,
-            "No request found or no changes made",
-            [],
-            {}
+            updatedRequest
           );
         }
+        return respond(res, 404, "No request found or no changes made");
       } catch (error) {
         console.error("PATCH error:", error);
-        return respond(res, 500, "Server error", [], {});
+        return respond(res, 500, "Server error");
+      }
+    });
+
+    // GET: Get recent donation requests
+    app.get("/donations/recent", async (req, res) => {
+      try {
+        const { requesterEmail } = req.query;
+
+        if (!requesterEmail) {
+          return respond(res, 400, "Requester email is required");
+        }
+
+        const query = { "requester.email": requesterEmail };
+        const { items: requests, meta } = await paginate(
+          bloodRequestsCollection,
+          query,
+          { page: 1, limit: 3, sort: { createdAt: -1 } }
+        );
+
+        return respond(
+          res,
+          200,
+          "Recent donation requests retrieved",
+          requests,
+          {
+            ...meta,
+            hasMore: meta.total > 3,
+          }
+        );
+      } catch (error) {
+        console.error("Error fetching recent donations:", error);
+        return respond(res, 500, "Server error");
+      }
+    });
+
+    // GET: Paginated donation requests with filtering
+    app.get("/donations/my-requests", async (req, res) => {
+      try {
+        const { email, page = 1, limit = 10, status, bloodGroup } = req.query;
+
+        if (!email) {
+          return respond(res, 400, "Requester email is required");
+        }
+
+        const query = { "requester.email": email };
+
+        if (status && status !== "all") {
+          query["status.current"] = status;
+        }
+
+        if (bloodGroup) {
+          query["donationInfo.bloodGroup"] = bloodGroup;
+        }
+
+        const { items: requests, meta } = await paginate(
+          bloodRequestsCollection,
+          query,
+          { page, limit, sort: { createdAt: -1 } }
+        );
+
+        return respond(res, 200, "Donation requests retrieved", requests, {
+          ...meta,
+          filters: {
+            status: status || "all",
+            bloodGroup: bloodGroup || "all",
+          },
+        });
+      } catch (error) {
+        console.error("Error fetching donation requests:", error);
+        return respond(res, 500, "Server error");
+      }
+    });
+
+    // PATCH: Update blood request (requester edit)
+    app.patch("/donations/my-requests/:id", validateId, async (req, res) => {
+      try {
+        const id = req.validatedId;
+        const updateData = req.body;
+        const requesterData = updateData?.requester || {};
+
+        if (
+          !updateData.recipient ||
+          !updateData.donationInfo ||
+          !updateData.location
+        ) {
+          return respond(res, 400, "Missing required fields in request body");
+        }
+
+        const existingRequest = await bloodRequestsCollection.findOne({
+          _id: id,
+        });
+        if (!existingRequest) {
+          return respond(res, 404, "Blood request not found");
+        }
+
+        const currentTime = new Date().toISOString();
+        const updateObj = {
+          $set: {
+            recipient: {
+              name: updateData.recipient.name,
+              hospital: updateData.recipient.hospital,
+            },
+            donationInfo: {
+              bloodGroup: updateData.donationInfo.bloodGroup,
+              requiredDate: updateData.donationInfo.requiredDate,
+              requiredTime: updateData.donationInfo.requiredTime,
+              urgency: updateData.donationInfo.urgency || "normal",
+              additionalInfo: updateData.donationInfo.additionalInfo || "",
+            },
+            location: {
+              division: updateData.location.division,
+              district: updateData.location.district,
+              upazila: updateData.location.upazila,
+              fullAddress: updateData.location.fullAddress,
+            },
+            updatedAt: currentTime,
+            "status.current":
+              updateData.status?.current || existingRequest.status.current,
+          },
+          $push: {
+            "status.history": {
+              $each: [
+                {
+                  status:
+                    updateData.status?.current ||
+                    existingRequest.status.current,
+                  changedAt: currentTime,
+                  changedBy: {
+                    id: requesterData.id || "system",
+                    name: requesterData.name || "system",
+                    email: requesterData.email || "system",
+                    role: "requester",
+                  },
+                },
+              ],
+              $slice: -10,
+            },
+          },
+        };
+
+        const result = await bloodRequestsCollection.updateOne(
+          { _id: id },
+          updateObj
+        );
+
+        if (result.matchedCount === 0) {
+          return respond(res, 404, "Blood request not found");
+        }
+
+        if (result.modifiedCount === 1) {
+          const updatedRequest = await bloodRequestsCollection.findOne({
+            _id: id,
+          });
+          return respond(
+            res,
+            200,
+            "Blood request updated successfully",
+            updatedRequest
+          );
+        }
+        return respond(
+          res,
+          200,
+          "No changes made to the request",
+          existingRequest
+        );
+      } catch (error) {
+        console.error("Error updating blood request:", error);
+        return respond(res, 500, "Server error");
       }
     });
   } finally {
@@ -520,6 +598,7 @@ async function run() {
     // await client.close();
   }
 }
+
 run().catch(console.dir);
 
 app.get("/", (req, res) => {

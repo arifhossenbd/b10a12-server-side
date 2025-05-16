@@ -7,22 +7,16 @@
  * @param {object} [meta={}] - Metadata/pagination info (optional)
  * @returns {object} - Formatted JSON response
  */
-exports.respond = (res, status, message, data = null, meta = {}) => {
+const respond = (res, status, message, data = null, meta = {}) => {
   const response = {
     success: status >= 200 && status < 300,
     message,
   };
 
-  // Always include data field if it's an array (even if empty)
-  if (Array.isArray(data)) {
-    response.data = data;
-  }
-  // Include data if it exists (non-null/undefined)
-  else if (data !== null && data !== undefined) {
+  if (Array.isArray(data) || (data !== null && data !== undefined)) {
     response.data = data;
   }
 
-  // Include meta if it has properties
   if (Object.keys(meta).length > 0) {
     response.meta = meta;
   }
@@ -30,7 +24,7 @@ exports.respond = (res, status, message, data = null, meta = {}) => {
   return res.status(status).json(response);
 };
 
-exports.getBloodGroupQuery = (bloodGroup) => {
+const getBloodGroupQuery = (bloodGroup) => {
   if (!bloodGroup) return {};
 
   const cleaned = bloodGroup
@@ -47,3 +41,40 @@ exports.getBloodGroupQuery = (bloodGroup) => {
     },
   };
 };
+
+/**
+ * Enhanced pagination helper
+ * @param {object} collection - MongoDB collection
+ * @param {object} query - MongoDB query object
+ * @param {object} options - Pagination options
+ * @param {number} options.page - Current page number
+ * @param {number} options.limit - Items per page
+ * @param {object} options.sort - Sorting criteria
+ * @returns {object} - Paginated result with metadata
+ */
+async function paginate(collection, query = {}, options = {}) {
+  const page = Math.max(parseInt(options.page) || 1, 1);
+  const limit = Math.min(Math.max(parseInt(options.limit) || 10, 1), 100);
+  const skip = (page - 1) * limit;
+  const sort = options.sort || { _id: -1 };
+
+  // Execute count and find in parallel
+  const [total, items] = await Promise.all([
+    collection.countDocuments(query),
+    collection.find(query).sort(sort).skip(skip).limit(limit).toArray(),
+  ]);
+
+  return {
+    items,
+    meta: {
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+      hasNext: page * limit < total,
+      hasPrev: page > 1,
+    },
+  };
+}
+
+module.exports = { respond, getBloodGroupQuery, paginate };
