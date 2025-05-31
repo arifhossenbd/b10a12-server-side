@@ -48,6 +48,74 @@ const validateId = (req, res, next) => {
   }
 };
 
+// Middleware to verify JWT token
+const verifyToken = (req, res, next) => {
+  let token = req.cookies?.token;
+
+  if (!token && req.headers.authorization) {
+    const authHeader = req.headers.authorization;
+    if (authHeader.startsWith('Bearer ')) {
+      token = authHeader.split(' ')[1];
+    }
+  }
+
+  if (!token) {
+    return res.status(401).send({ success: false, message: "Unauthorized access" });
+  }
+
+  jwt.verify(token, process.env.ACCESS_TOKEN_SECRETE, (err, decoded) => {
+    if (err) {
+      return res.status(401).send({ success: false, message: "Unauthorized access" });
+    }
+    req.decoded = decoded;
+    next();
+  });
+};
+
+// Verify admin role
+const verifyAdmin = async (req, res, next) => {
+  const email = req.decoded?.email;
+  if (!email) {
+    return respond(res, 401, "Unauthorized access - email not found");
+  }
+  try {
+    const user = await userCollection.findOne({
+      email,
+      role: "admin",
+    })
+    if (!user) {
+      return respond(res, 403, "Forbidden - Admin access required");
+    }
+    next();
+  } catch (error) {
+    console.error("Error verifying admin:", error);
+    return respond(res, 500, "Server error while verifying admin");
+    
+  }
+}
+
+// Verify volunteer role
+const verifyVolunteer = async (req, res, next) => {
+  const email = req.decoded?.email;
+  if (!email) {
+    return respond(res, 401, "Unauthorized access - email not found");
+  }
+  try {
+    const user = await userCollection.findOne({
+      email,
+      role: "volunteer",
+    });
+    if (!user) {
+      return respond(res, 403, "Forbidden - Volunteer access required");
+    }
+    next();
+  } catch (error) {
+    console.error("Error verifying volunteer:", error);
+    return respond(res, 500, "Server error while verifying volunteer");
+  }
+}
+
+
 app.use(
   cors({
     origin: ["http://localhost:5173", "https://blood-connect-b4710.web.app"],
@@ -210,6 +278,63 @@ async function run() {
         return respond(res, 200, "No changes were made to the user");
       } catch (error) {
         console.error("Error updating user:", error);
+        return respond(res, 500, "Server error");
+      }
+    });
+
+    // PATCH: Update user status (block/unblock)
+    app.patch("/users/:id/status", validateId, async (req, res) => {
+      const id = req.validatedId;
+      const { status } = req.body;
+
+      if (!["active", "blocked"].includes(status)) {
+        return respond(res, 400, "Invalid status value");
+      }
+
+      try {
+        const result = await userCollection.updateOne(
+          { _id: id },
+          {
+            $set: {
+              accountStatus: status,
+              updatedAt: new Date().toISOString(),
+            },
+          }
+        );
+
+        if (result.matchedCount === 0) {
+          return respond(res, 404, "User not found");
+        }
+
+        return respond(res, 200, "User status updated successfully");
+      } catch (error) {
+        console.error("Error updating user status:", error);
+        return respond(res, 500, "Server error");
+      }
+    });
+
+    // PATCH: Update user role
+    app.patch("/users/:id/role", validateId, async (req, res) => {
+      const id = req.validatedId;
+      const { role } = req.body;
+
+      if (!["donor", "volunteer", "admin"].includes(role)) {
+        return respond(res, 400, "Invalid role value");
+      }
+
+      try {
+        const result = await userCollection.updateOne(
+          { _id: id },
+          { $set: { role, updatedAt: new Date().toISOString() } }
+        );
+
+        if (result.matchedCount === 0) {
+          return respond(res, 404, "User not found");
+        }
+
+        return respond(res, 200, "User role updated successfully");
+      } catch (error) {
+        console.error("Error updating user role:", error);
         return respond(res, 500, "Server error");
       }
     });
