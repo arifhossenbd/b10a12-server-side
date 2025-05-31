@@ -12,6 +12,7 @@ const respond = (res, status, message, data = null, meta = {}) => {
     success: status >= 200 && status < 300,
     message,
   };
+  console.log(status, message);
 
   if (Array.isArray(data) || (data !== null && data !== undefined)) {
     response.data = data;

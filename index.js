@@ -72,7 +72,7 @@ const client = new MongoClient(uri, {
 const db = client.db("blood-donation");
 const userCollection = db.collection("users");
 const bloodRequestsCollection = db.collection("blood-requests");
-const bloodDonationCollection = db.collection("blood-donations");
+const donationCollection = db.collection("donations");
 const blogCollection = db.collection("blogs");
 const messageCollection = db.collection("messages");
 
@@ -100,7 +100,7 @@ async function run() {
       { key: { donorId: 1 } },
     ]);
 
-    await bloodDonationCollection.createIndexes([
+    await donationCollection.createIndexes([
       { key: { requestId: 1 } },
       { key: { donorId: 1 } },
       { key: { status: 1 } },
@@ -131,15 +131,15 @@ async function run() {
     // GET: Retrieve single user by email
     app.get("/users/find", async (req, res) => {
       try {
-        const { email } = req.query;
+        const { email, name } = req.query;
 
-        if (!email) {
-          return respond(res, 400, "Email parameter is required");
+        if (!email && !name) {
+          return respond(res, 400, "Name and email parameter is required");
         }
 
         const user = await userCollection.findOne({ email });
         if (user) {
-          return respond(res, 200, "User retrieved successfully", user);
+          return respond(res, 200, `${name} connected successfully`, user);
         }
         return respond(res, 404, "User not found");
       } catch (error) {
@@ -242,10 +242,7 @@ async function run() {
         const newBloodRequest = req.body;
 
         // Prevent self-donation
-        if (
-          newBloodRequest.requester.email ===
-          newBloodRequest.metadata.donorEmail
-        ) {
+        if (newBloodRequest.requester?.email === newBloodRequest.donor?.email) {
           return respond(
             res,
             403,
@@ -255,8 +252,8 @@ async function run() {
 
         // Check if donor is already engaged with this requester
         const existingPair = await bloodRequestsCollection.findOne({
-          "requester.email": newBloodRequest.requester.email,
-          "metadata.donorEmail": newBloodRequest.metadata.donorEmail,
+          "requester?.email": newBloodRequest.requester?.email,
+          "donor?.email": newBloodRequest.donor?.email,
           "status.current": { $in: ["pending", "inprogress"] },
         });
 
@@ -270,7 +267,7 @@ async function run() {
 
         // Check if donor is busy with other requests
         const donorBusy = await bloodRequestsCollection.findOne({
-          "metadata.donorEmail": newBloodRequest.metadata.donorEmail,
+          "donor?.email": newBloodRequest.donor?.email,
           "status.current": "inprogress",
         });
 
@@ -294,30 +291,50 @@ async function run() {
       }
     });
 
-    // GET: Retrieve all requests with pagination
+    // GET: Retrieve all blood requests with proper role-based access control
     app.get("/blood-requests", async (req, res) => {
       try {
-        const { page = 1, limit = 10 } = req.query;
+        const { email, role, page = 1, limit = 10 } = req.query;
 
-        const { items: bloodRequests, meta } = await paginate(
-          bloodRequestsCollection,
-          {},
-          { page, limit }
-        );
+        // Build the query based on user role
+        let query = {};
 
-        if (bloodRequests.length) {
+        if (email) {
+          // Users can see requests where they're either requester OR donor
+          query = {
+            $or: [{ "requester.email": email }, { "donor.email": email }],
+          };
+        } else if (role === "admin" || role === "volunteer") {
+          // Admins and volunteers can see all requests
+          query = {};
+        } else {
           return respond(
             res,
-            200,
-            "Blood requests retrieved successfully",
-            bloodRequests,
-            meta
+            400,
+            "Email or valid role is required to fetch donation requests"
           );
         }
-        return respond(res, 404, "No blood requests found", [], meta);
+
+        const { items: requests, meta } = await paginate(
+          bloodRequestsCollection,
+          query,
+          {
+            page: parseInt(page),
+            limit: parseInt(limit),
+            sort: { createdAt: -1 },
+          }
+        );
+
+        return respond(
+          res,
+          200,
+          "Donation requests retrieved successfully",
+          requests,
+          meta
+        );
       } catch (error) {
-        console.error("Error fetching blood requests:", error);
-        return respond(res, 500, "Server error");
+        console.error("Error fetching donation requests:", error);
+        return respond(res, 500, "Server error while processing your request");
       }
     });
 
@@ -342,79 +359,60 @@ async function run() {
       }
     });
 
-    // PATCH: Update blood request status by donor
-    app.patch("/blood-requests/:id", validateId, async (req, res) => {
+    // DELETE: Delete a blood request (only if status is pending or cancelled) by requester or admin
+    app.delete("/blood-requests/:id", validateId, async (req, res) => {
       try {
         const id = req.validatedId;
-        const updateData = req.body;
+        const { email, role } = req.query;
 
-        // Required field validation
-        if (!updateData.donationStatus || !updateData.status?.current) {
-          return respond(res, 400, "Missing required status fields");
-        }
-
-        const currentTime = new Date().toISOString();
-
-        // Construct the update object
-        const updateObj = {
-          $set: {
-            donationStatus: updateData.donationStatus,
-            updatedAt: currentTime,
-            "status.current": updateData.status.current,
-            // Update metadata if provided
-            ...(updateData.metadata && {
-              metadata: updateData.metadata,
-            }),
-          },
-          $push: {
-            "status.history": {
-              $each: [
-                {
-                  status: updateData.status.current,
-                  changedAt: currentTime,
-                  changedBy: {
-                    id: updateData.metadata.donorId || "system",
-                    name: updateData.metadata.donorName || "system",
-                    email: updateData.metadata.donorEmail || "system",
-                    role: "donor",
-                  },
-                },
-              ],
-              $slice: -10, // Keep last 10 status changes
-            },
-          },
-        };
-
-        const result = await bloodRequestsCollection.updateOne(
-          { _id: id },
-          updateObj
-        );
-
-        if (result.matchedCount === 0) {
-          return respond(res, 404, "Blood request not found");
-        }
-
-        if (result.modifiedCount === 1) {
-          const updatedRequest = await bloodRequestsCollection.findOne({
-            _id: id,
-          });
+        if (!email) {
           return respond(
             res,
-            200,
-            "Request updated successfully",
-            updatedRequest
+            400,
+            "Requester email is required for verification"
           );
         }
 
-        return respond(res, 200, "No changes were made to the request");
+        // Find the request and verify ownership
+        const request = await bloodRequestsCollection.findOne({ _id: id });
+        if (!request) {
+          return respond(res, 404, "Blood request not found");
+        }
+
+        // Authorization check
+        if (role !== "admin" && request.requester?.email !== email) {
+          return respond(
+            res,
+            403,
+            "You are not authorized to delete this request"
+          );
+        }
+
+        // Only allow deletion if status is pending OR cancelled
+        if (
+          request.status.current !== "pending" &&
+          request.status.current !== "cancelled"
+        ) {
+          return respond(
+            res,
+            403,
+            "Can only delete requests with 'pending' or 'cancelled' status"
+          );
+        }
+
+        const result = await bloodRequestsCollection.deleteOne({ _id: id });
+        if (result.deletedCount === 1) {
+          return respond(res, 200, "Blood request deleted successfully");
+        }
+        return respond(res, 404, "Blood request not found");
       } catch (error) {
-        console.error("PATCH error:", error);
+        console.error("Error deleting blood request:", error);
         return respond(res, 500, "Server error");
       }
     });
 
-    // GET: Get recent donation requests
-    app.get("/donations/recent", async (req, res) => {
+    // GET: Get recent blood donation requests
+    app.get("/recent/blood/request", async (req, res) => {
       try {
         const { requesterEmail } = req.query;
 
@@ -422,7 +420,7 @@ async function run() {
           return respond(res, 400, "Requester email is required");
         }
 
-        const query = { "requester.email": requesterEmail };
+        const query = { "requester?.email": requesterEmail };
         const { items: requests, meta } = await paginate(
           bloodRequestsCollection,
           query,
@@ -445,43 +443,21 @@ async function run() {
       }
     });
 
-    // GET: Paginated donation requests with filtering
-    app.get("/donations/my-requests", async (req, res) => {
-      try {
-        const { email, page = 1, limit = 10 } = req.query;
-
-        if (!email) {
-          return respond(res, 400, "Requester email is required");
-        }
-
-        const query = { "requester.email": email };
-
-        const { items: requests, meta } = await paginate(
-          bloodRequestsCollection,
-          query,
-          { page, limit, sort: { createdAt: -1 } }
-        );
-
-        return respond(res, 200, "Donation requests retrieved", requests, meta);
-      } catch (error) {
-        console.error("Error fetching donation requests:", error);
-        return respond(res, 500, "Server error");
-      }
-    });
-
-    // PATCH: Update blood request (requester edit)
-    app.patch("/donations/my-requests/:id", validateId, async (req, res) => {
+    // Unified blood request update endpoint with role-based access control
+    app.patch("/blood-requests/:id", validateId, async (req, res) => {
       try {
         const id = req.validatedId;
-        const updateData = req.body;
-        const requesterData = updateData?.requester || {};
+        const { role, email, name, action, status, ...updateData } = req.body;
+        const currentTime = new Date().toISOString();
 
-        if (
-          !updateData.recipient ||
-          !updateData.donationInfo ||
-          !updateData.location
-        ) {
-          return respond(res, 400, "Missing required fields in request body");
+        // Validate required fields
+        if (!role || !email) {
+          return respond(res, 400, "Role and email are required");
+        }
+
+        // Validate action
+        if (!["update", "complete", "cancel"].includes(action)) {
+          return respond(res, 400, "Invalid action specified");
         }
 
         const existingRequest = await bloodRequestsCollection.findOne({
@@ -491,128 +467,165 @@ async function run() {
           return respond(res, 404, "Blood request not found");
         }
 
-        const currentTime = new Date().toISOString();
-        const updateObj = {
-          $set: {
-            recipient: {
-              name: updateData.recipient.name,
-              hospital: updateData.recipient.hospital,
-            },
-            donationInfo: {
-              bloodGroup: updateData.donationInfo.bloodGroup,
-              requiredDate: updateData.donationInfo.requiredDate,
-              requiredTime: updateData.donationInfo.requiredTime,
-              urgency: updateData.donationInfo.urgency || "normal",
-              additionalInfo: updateData.donationInfo.additionalInfo || "",
-            },
-            location: {
-              division: updateData.location.division,
-              district: updateData.location.district,
-              upazila: updateData.location.upazila,
-              fullAddress: updateData.location.fullAddress,
-            },
-            updatedAt: currentTime,
-            "status.current":
-              updateData.status?.current || existingRequest.status.current,
-          },
-          $push: {
-            "status.history": {
-              $each: [
+        // Check permissions based on action
+        const isRequester = existingRequest.requester?.email === email;
+        const isDonor = existingRequest.donor?.email === email;
+        const currentStatus = existingRequest.status?.current;
+
+        switch (action) {
+          case "update":
+            // For update action, allow full document update with permission checks
+            if (!isRequester && role !== "admin" && role !== "volunteer") {
+              return respond(res, 403, "Not authorized to update this request");
+            }
+
+            // Prepare update object
+            const finalUpdate = {
+              ...updateData,
+              updatedAt: currentTime,
+              // If status is being updated, maintain history
+              ...(status?.current && {
+                status: {
+                  current: status.current,
+                  history: [
+                    ...(existingRequest.status.history || []),
+                    {
+                      status: status.current,
+                      changedAt: currentTime,
+                      changedBy: { email, name, role },
+                    },
+                  ],
+                },
+              }),
+            };
+
+            const updateResult = await bloodRequestsCollection.updateOne(
+              { _id: id },
+              { $set: finalUpdate }
+            );
+
+            if (updateResult.matchedCount === 0) {
+              return respond(res, 404, "Blood request not found");
+            }
+
+            const updatedRequest = await bloodRequestsCollection.findOne({
+              _id: id,
+            });
+            return respond(
+              res,
+              200,
+              "Request updated successfully",
+              updatedRequest
+            );
+
+          case "complete":
+            if (
+              !isRequester &&
+              !isDonor &&
+              role !== "admin" &&
+              role !== "volunteer"
+            ) {
+              return respond(
+                res,
+                403,
+                "Not authorized to complete this request"
+              );
+            }
+
+            if (currentStatus !== "inprogress") {
+              return respond(
+                res,
+                400,
+                "Can only complete in-progress requests"
+              );
+            }
+
+            const completeUpdate = {
+              "status.current": "completed",
+              "status.history": [
+                ...(existingRequest.status.history || []),
                 {
-                  status:
-                    updateData.status?.current ||
-                    existingRequest.status.current,
+                  status: "completed",
                   changedAt: currentTime,
-                  changedBy: {
-                    id: requesterData.id || "system",
-                    name: requesterData.name || "system",
-                    email: requesterData.email || "system",
-                    role: "requester",
-                  },
+                  changedBy: { email, name, role },
                 },
               ],
-              $slice: -10,
-            },
-          },
-        };
+              updatedAt: currentTime,
+            };
 
-        const result = await bloodRequestsCollection.updateOne(
-          { _id: id },
-          updateObj
-        );
+            const completeResult = await bloodRequestsCollection.updateOne(
+              { _id: id },
+              { $set: completeUpdate }
+            );
 
-        if (result.matchedCount === 0) {
-          return respond(res, 404, "Blood request not found");
+            if (completeResult.matchedCount === 0) {
+              return respond(res, 404, "Blood request not found");
+            }
+
+            const completedRequest = await bloodRequestsCollection.findOne({
+              _id: id,
+            });
+            return respond(
+              res,
+              200,
+              "Request completed successfully",
+              completedRequest
+            );
+
+          case "cancel":
+            if (!isRequester && role !== "admin") {
+              return respond(
+                res,
+                403,
+                "Only requester or admin can cancel request"
+              );
+            }
+
+            if (!["pending", "inprogress"].includes(currentStatus)) {
+              return respond(
+                res,
+                400,
+                "Can only cancel pending or in-progress requests"
+              );
+            }
+
+            const cancelUpdate = {
+              "status.current": "cancelled",
+              "status.history": [
+                ...(existingRequest.status.history || []),
+                {
+                  status: "cancelled",
+                  changedAt: currentTime,
+                  changedBy: { email, name, role },
+                },
+              ],
+              updatedAt: currentTime,
+            };
+
+            const cancelResult = await bloodRequestsCollection.updateOne(
+              { _id: id },
+              { $set: cancelUpdate }
+            );
+
+            if (cancelResult.matchedCount === 0) {
+              return respond(res, 404, "Blood request not found");
+            }
+
+            const cancelledRequest = await bloodRequestsCollection.findOne({
+              _id: id,
+            });
+            return respond(
+              res,
+              200,
+              "Request cancelled successfully",
+              cancelledRequest
+            );
+
+          default:
+            return respond(res, 400, "Invalid action specified");
         }
-
-        if (result.modifiedCount === 1) {
-          const updatedRequest = await bloodRequestsCollection.findOne({
-            _id: id,
-          });
-          return respond(
-            res,
-            200,
-            "Blood request updated successfully",
-            updatedRequest
-          );
-        }
-        return respond(
-          res,
-          200,
-          "No changes made to the request",
-          existingRequest
-        );
       } catch (error) {
         console.error("Error updating blood request:", error);
-        return respond(res, 500, "Server error");
-      }
-    });
-
-    // DELETE: Delete a blood request (only if status is pending)
-    app.delete("/donations/my-requests/:id", validateId, async (req, res) => {
-      try {
-        const id = req.validatedId;
-        const { email } = req.query; // Requester's email for verification
-
-        if (!email) {
-          return respond(
-            res,
-            400,
-            "Requester email is required for verification"
-          );
-        }
-
-        // Find the request and verify ownership
-        const request = await bloodRequestsCollection.findOne({ _id: id });
-        if (!request) {
-          return respond(res, 404, "Blood request not found");
-        }
-
-        // Verify requester owns this request
-        if (request.requester.email !== email) {
-          return respond(
-            res,
-            403,
-            "You are not authorized to delete this request"
-          );
-        }
-
-        // Only allow deletion if status is pending
-        if (request.status.current !== "pending") {
-          return respond(
-            res,
-            403,
-            "Cannot delete request that is already in progress or completed"
-          );
-        }
-
-        const result = await bloodRequestsCollection.deleteOne({ _id: id });
-        if (result.deletedCount === 1) {
-          return respond(res, 200, "Blood request deleted successfully");
-        }
-        return respond(res, 404, "Blood request not found");
-      } catch (error) {
-        console.error("Error deleting blood request:", error);
         return respond(res, 500, "Server error");
       }
     });
